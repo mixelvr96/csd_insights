@@ -62,7 +62,7 @@ export async function sendDigest(): Promise<boolean> {
   console.log("Generating PPTX and uploading to Google Drive...");
   let driveUrl: string | undefined;
   try {
-    driveUrl = await generateAndUploadPptx() ?? undefined;
+    driveUrl = await generateAndUploadPptx(digest.digestId) ?? undefined;
   } catch (err) {
     console.error("PPTX/Drive step failed (continuing without link):", err);
   }
@@ -89,7 +89,7 @@ export async function sendDigest(): Promise<boolean> {
     console.log("\nWriting news to HubSpot company notes...");
     const allItems = digest.sections.flatMap((s) => s.items);
     try {
-      await writeNewsToHubSpot(allItems);
+      await writeNewsToHubSpot(allItems, driveUrl);
     } catch (err) {
       console.error("HubSpot notes step failed (non-critical):", err);
     }

@@ -51,7 +51,13 @@ async function runCollection() {
 async function runProcessing() {
   console.log("\n=== Starting AI processing ===");
   try {
-    await summarizeNews();
+    let batch = 1;
+    while (true) {
+      console.log(`AI batch ${batch}...`);
+      const n = await summarizeNews();
+      if (n === 0) break;
+      batch++;
+    }
     await markReadyItems();
     console.log("=== Processing complete ===\n");
   } catch (err) {
@@ -73,42 +79,38 @@ async function runDigest() {
 
 // --- Cron jobs ---
 
-// Telegram poll: every 30 min (lightweight, keeps Zorka agency news fresh)
-cron.schedule("*/30 * * * *", () => {
-  collectTelegramNews().catch(console.error);
-});
+// Biweekly digest cadence — fixed epoch (Mon 2024-01-08 was a digest day),
+// works correctly across year boundaries.
+const BIWEEKLY_EPOCH_MS = new Date("2024-01-08T00:00:00Z").getTime();
+function isDigestWeek(now: Date = new Date()): boolean {
+  const weeksSinceEpoch = Math.floor(
+    (now.getTime() - BIWEEKLY_EPOCH_MS) / (7 * 24 * 60 * 60 * 1000)
+  );
+  return weeksSinceEpoch % 2 === 0;
+}
 
-// Sunday 06:00 Moscow (03:00 UTC): sync clients → collect news for the week
+// Sunday 06:00 Moscow (03:00 UTC): sync clients → collect news (Telegram + RSS + Google News)
 cron.schedule("0 3 * * 0", async () => {
   await syncClients();
   await detectCompetitors();
-  await runCollection(); // collect with up-to-date client list
+  await runCollection();
 });
 
-// Digest: every other Monday — AI processing at 08:00, send at 10:00 Moscow (05:00 / 07:00 UTC)
+// Every other Monday at 08:00 Moscow (05:00 UTC): AI processing
 cron.schedule("0 5 * * 1", async () => {
-  const now = new Date();
-  const startOfYear = new Date(now.getFullYear(), 0, 1);
-  const weekNumber = Math.ceil(
-    ((now.getTime() - startOfYear.getTime()) / 86400000 + startOfYear.getDay() + 1) / 7
-  );
-  if (weekNumber % 2 === 0) {
+  if (isDigestWeek()) {
     await runProcessing();
   } else {
-    console.log(`Week ${weekNumber} (odd) — skipping processing`);
+    console.log("Off-week Monday — skipping processing");
   }
 });
 
+// Every other Monday at 10:00 Moscow (07:00 UTC): build & send digest
 cron.schedule("0 7 * * 1", async () => {
-  const now = new Date();
-  const startOfYear = new Date(now.getFullYear(), 0, 1);
-  const weekNumber = Math.ceil(
-    ((now.getTime() - startOfYear.getTime()) / 86400000 + startOfYear.getDay() + 1) / 7
-  );
-  if (weekNumber % 2 === 0) {
+  if (isDigestWeek()) {
     await runDigest();
   } else {
-    console.log(`Week ${weekNumber} (odd) — skipping digest`);
+    console.log("Off-week Monday — skipping digest");
   }
 });
 
@@ -200,9 +202,8 @@ app.get("/api/status", async (_req, res) => {
 
 app.listen(config.port, () => {
   console.log(`CSD Insights server running on port ${config.port}`);
-  console.log("Cron jobs registered:");
-  console.log("  - Telegram poll: every 30 min");
-  console.log("  - News collection: daily 08:00 MSK");
-  console.log("  - HubSpot sync: Sunday 06:00 MSK");
-  console.log("  - Digest: every other Monday 10:00 MSK");
+  console.log("Cron jobs registered (server timezone: UTC):");
+  console.log("  - HubSpot sync + news collection: Sunday 06:00 MSK");
+  console.log("  - AI processing: every other Monday 08:00 MSK");
+  console.log("  - Digest send: every other Monday 10:00 MSK");
 });

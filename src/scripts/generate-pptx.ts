@@ -47,19 +47,19 @@ function isSimilar(a: string, b: string): boolean {
   return intersection.length / union.size > 0.35;
 }
 
-export async function generateAndUploadPptx(): Promise<string | null> {
-  return main();
+export async function generateAndUploadPptx(digestId?: string): Promise<string | null> {
+  return main(digestId);
 }
 
-async function main(): Promise<string | null> {
+async function main(digestId?: string): Promise<string | null> {
   const twoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
   const today = new Date().toLocaleDateString("ru-RU", { year: "numeric", month: "long", day: "numeric" });
 
   const pptx = new PptxGenJS();
   pptx.layout = "LAYOUT_WIDE"; // 13.33 x 7.5
 
-  // Logo path
-  const logoPath = "/Users/viktorryzhov/Desktop/Vibecoding_Viktor/Zorka.ru_NEW/public/images/Zorka_White_ru.png";
+  // Logo path (relative to project root)
+  const logoPath = join(__dirname, "../../assets/zorka-logo-white.png");
 
   // ===== TITLE SLIDE =====
   const titleSlide = pptx.addSlide();
@@ -120,14 +120,19 @@ async function main(): Promise<string | null> {
   const allSelected: { title: string }[] = [];
 
   for (const [category, cfg] of Object.entries(SECTION_CONFIG)) {
-    const { data: candidates } = await sb
+    let query = sb
       .from("news_items")
       .select("*")
       .eq("category", category)
-      .eq("status", "ready")
       .gte("published_at", twoWeeksAgo)
       .order("relevance_score", { ascending: false })
       .limit(cfg.maxItems * 3);
+
+    // If a digest ID is provided, use those items (already selected for the digest);
+    // otherwise fall back to items still in 'ready' status.
+    query = digestId ? query.eq("digest_id", digestId) : query.eq("status", "ready");
+
+    const { data: candidates } = await query;
 
     if (!candidates?.length) continue;
 

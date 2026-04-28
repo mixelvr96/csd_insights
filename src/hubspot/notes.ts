@@ -27,7 +27,7 @@ async function hubspotRequest<T>(endpoint: string, options: RequestInit = {}): P
   return response.json();
 }
 
-function buildNoteBody(item: NewsItem): string {
+function buildNoteBody(item: NewsItem, driveUrl?: string): string {
   const lines: string[] = [];
   lines.push(`📰 ${item.title}`);
   lines.push("");
@@ -43,7 +43,8 @@ function buildNoteBody(item: NewsItem): string {
   }
 
   lines.push("");
-  lines.push(`🔗 ${item.url}`);
+  lines.push(`🔗 Источник: ${item.url}`);
+  if (driveUrl) lines.push(`📊 Полный дайджест: ${driveUrl}`);
   lines.push(`— CSD Insights, ${new Date().toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" })}`);
 
   return lines.join("\n");
@@ -79,7 +80,7 @@ function extractClientName(item: NewsItem): string | null {
   return null;
 }
 
-export async function writeNewsToHubSpot(items: NewsItem[]): Promise<void> {
+export async function writeNewsToHubSpot(items: NewsItem[], driveUrl?: string): Promise<void> {
   const relevantItems = items.filter(
     (i) => i.category === CATEGORIES.CLIENT || i.category === CATEGORIES.COMPETITOR
   );
@@ -121,7 +122,7 @@ export async function writeNewsToHubSpot(items: NewsItem[]): Promise<void> {
     }
 
     try {
-      const noteBody = buildNoteBody(item);
+      const noteBody = buildNoteBody(item, driveUrl);
       await createNoteOnCompany(companyId, noteBody);
       console.log(`  ✓ Note written to HubSpot: ${clientName} — ${item.title.slice(0, 50)}`);
       written++;

@@ -3,3 +3,4 @@ dist/
 .env
 *.pptx
 csd-insights-*.json
+.DS_Store

@@ -5,6 +5,18 @@ import { getActiveClients } from "../hubspot/client-sync.js";
 
 const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Process Зорка first, then client-relevant categories, then broader market context
+const CATEGORY_PRIORITY = [
+  CATEGORIES.ZORKA_AGENCY,
+  CATEGORIES.CLIENT,
+  CATEGORIES.COMPETITOR,
+  CATEGORIES.VERTICAL,
+  CATEGORIES.RESEARCH,
+  CATEGORIES.INDUSTRY,
+];
+
 interface SummarizedItem {
   id: string;
   summary: string;
@@ -13,14 +25,26 @@ interface SummarizedItem {
   reject: boolean;
 }
 
-async function callClaude(prompt: string): Promise<string> {
-  const message = await anthropic.messages.create({
-    model: config.anthropic.model,
-    max_tokens: 4096,
-    messages: [{ role: "user", content: prompt }],
-  });
-  const textBlock = message.content.find((b) => b.type === "text");
-  return textBlock?.text || "";
+async function callClaude(prompt: string, attempt = 0): Promise<string> {
+  try {
+    const message = await anthropic.messages.create({
+      model: config.anthropic.model,
+      max_tokens: 4096,
+      messages: [{ role: "user", content: prompt }],
+    });
+    const textBlock = message.content.find((b) => b.type === "text");
+    return textBlock?.text || "";
+  } catch (err: any) {
+    const isRateLimit = err?.status === 429 || err?.error?.type === "rate_limit_error";
+    const isOverloaded = err?.status === 529 || err?.error?.type === "overloaded_error";
+    if ((isRateLimit || isOverloaded) && attempt < 4) {
+      const wait = 5000 * (attempt + 1);
+      console.log(`  Anthropic ${err.status} — retrying in ${wait}ms (attempt ${attempt + 1}/4)`);
+      await sleep(wait);
+      return callClaude(prompt, attempt + 1);
+    }
+    throw err;
+  }
 }
 
 function buildSummarizationPrompt(
@@ -122,39 +146,35 @@ ${itemsList}`;
 }
 
 export async function summarizeNews(): Promise<number> {
-  const { data: rawItems, error } = await supabase
-    .from("news_items")
-    .select("*")
-    .eq("status", "raw")
-    .order("collected_at", { ascending: true })
-    .limit(50);
-
-  if (error || !rawItems?.length) {
-    console.log("No raw items to summarize");
-    return 0;
-  }
-
-  console.log(`Summarizing ${rawItems.length} news items...`);
-
-  // Group by category for appropriate prompts
-  const grouped = new Map<string, NewsItem[]>();
-  for (const item of rawItems) {
-    const list = grouped.get(item.category) || [];
-    list.push(item);
-    grouped.set(item.category, list);
-  }
-
+  // Pull up to 50 raw items per call, prioritised by category so important
+  // ones (Зорка, клиенты, конкуренты) never get squeezed out by a backlog.
   let processed = 0;
+  let totalFetched = 0;
+  const PER_CALL_LIMIT = 50;
+  const BATCH_SIZE = 10;
 
-  for (const [category, items] of grouped) {
-    // Process in batches of 10
-    for (let i = 0; i < items.length; i += 10) {
-      const batch = items.slice(i, i + 10);
+  for (const category of CATEGORY_PRIORITY) {
+    const remaining = PER_CALL_LIMIT - totalFetched;
+    if (remaining <= 0) break;
+
+    const { data: items } = await supabase
+      .from("news_items")
+      .select("*")
+      .eq("status", "raw")
+      .eq("category", category)
+      .order("collected_at", { ascending: true })
+      .limit(remaining);
+
+    if (!items?.length) continue;
+    totalFetched += items.length;
+    console.log(`Summarizing ${items.length} ${category} items...`);
+
+    for (let i = 0; i < items.length; i += BATCH_SIZE) {
+      const batch = items.slice(i, i + BATCH_SIZE);
       const prompt = buildSummarizationPrompt(batch, category);
 
       try {
         const response = await callClaude(prompt);
-        // Extract JSON from response (handle markdown code blocks)
         const jsonMatch = response.match(/\[[\s\S]*\]/);
         if (!jsonMatch) {
           console.error("Failed to parse AI response as JSON");
@@ -178,13 +198,22 @@ export async function summarizeNews(): Promise<number> {
           processed++;
         }
       } catch (err) {
-        console.error(`Error summarizing batch:`, err);
+        console.error(`Error summarizing ${category} batch:`, err);
       }
+
+      // Pause between Claude calls to avoid rate-limit spikes
+      if (i + BATCH_SIZE < items.length) await sleep(1000);
     }
+
+    await sleep(1000);
   }
 
-  console.log(`Summarized ${processed} items`);
-  return processed;
+  if (totalFetched === 0) {
+    console.log("No raw items to summarize");
+  } else {
+    console.log(`Summarized ${processed}/${totalFetched} items`);
+  }
+  return totalFetched;
 }
 
 export async function detectCompetitors(): Promise<void> {
